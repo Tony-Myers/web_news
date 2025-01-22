@@ -1,21 +1,43 @@
 # File: scrapping_app.py
-
 import streamlit as st
 import requests
 from typing import List, Dict, Any
-from subprocess import run
 
 
 # --- Utility Functions ---
-def scrape_content_from_api(api_url: str, headers: Dict[str, str] = None) -> List[Dict[str, Any]]:
+def fetch_google_results(query: str) -> List[Dict[str, Any]]:
     """
-    Queries the external aggregator or API to return data.
+    Fetches results from Google Custom Search API.
     """
-    response = requests.get(api_url, headers=headers)
-    if response.status_code == 200:
-        return response.json().get("items", [])
-    else:
-        raise ValueError(f"Failed to fetch content: {response.status_code} {response.reason}")
+    try:
+        params = {
+            "key": st.secrets["api_keys"]["google_api_key"],
+            "cx": st.secrets["api_keys"]["google_cx"],
+            "q": query,
+        }
+        response = requests.get("https://www.googleapis.com/customsearch/v1", params=params)
+        response.raise_for_status()
+        items = response.json().get("items", [])
+        return [{"title": item["title"], "url": item["link"], "description": item.get("snippet", "")} for item in items]
+    except Exception as e:
+        st.error(f"Error fetching results from Google: {e}")
+        return []
+
+
+def fetch_newsapi_results(query: str) -> List[Dict[str, Any]]:
+    """
+    Fetches results from NewsAPI.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {st.secrets['api_keys']['newsapi_key']}"}
+        params = {"q": query, "language": "en"}
+        response = requests.get("https://newsapi.org/v2/everything", headers=headers, params=params)
+        response.raise_for_status()
+        articles = response.json().get("articles", [])
+        return [{"title": article["title"], "url": article["url"], "description": article.get("description", "")} for article in articles]
+    except Exception as e:
+        st.error(f"Error fetching results from NewsAPI: {e}")
+        return []
 
 
 def rate_content(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -56,112 +78,51 @@ def generate_social_posts(content_item: Dict[str, Any], platform: str) -> str:
         raise ValueError(f"Unsupported platform: {platform}")
 
 
-def post_to_platform(post_text: str, platform: str, credentials: Dict[str, str]):
-    """
-    Sends the post to the platform using appropriate APIs.
-    """
-    if platform == "LinkedIn":
-        url = "https://api.linkedin.com/v2/ugcPosts"
-        headers = {
-            "Authorization": f"Bearer {credentials['LinkedIn']}",
-            "Content-Type": "application/json"
-        }
-        payload = {"content": {"description": post_text}}
-        response = requests.post(url, headers=headers, json=payload)
-        return response.status_code, response.reason
-
-    elif platform == "BlueSky":
-        # Use Node.js script to post on BlueSky
-        dotenv_content = f"""BLUESKY_USERNAME={credentials['BlueSky_Username']}
-BLUESKY_PASSWORD={credentials['BlueSky_Password']}
-"""
-        with open(".env", "w") as env_file:
-            env_file.write(dotenv_content)
-
-        bluesky_script = f"""
-import {{ BskyAgent }} from '@atproto/api';
-import * as dotenv from 'dotenv';
-
-dotenv.config();
-
-const agent = new BskyAgent({{ service: 'https://bsky.social' }});
-
-async function main() {{
-    await agent.login({{ identifier: process.env.BLUESKY_USERNAME, password: process.env.BLUESKY_PASSWORD }});
-    await agent.post({{ text: `{post_text}` }});
-    console.log("Posted to BlueSky!");
-}}
-
-main();
-"""
-        with open("bluesky_post.js", "w") as js_file:
-            js_file.write(bluesky_script)
-
-        # Run Node.js script
-        result = run(["node", "bluesky_post.js"])
-        return result.returncode, "BlueSky post simulated."
-
-    elif platform == "X":
-        url = "https://api.twitter.com/2/tweets"
-        headers = {
-            "Authorization": f"Bearer {credentials['X_Bearer_Token']}",
-            "Content-Type": "application/json"
-        }
-        payload = {"text": post_text}
-        response = requests.post(url, headers=headers, json=payload)
-        return response.status_code, response.reason
-
-    else:
-        raise ValueError(f"Unsupported platform: {platform}")
-
-
 def check_password():
     """
     Checks if the user-provided password matches the stored password.
     """
     try:
-        # If you stored your password under [general] in secrets.toml, access it like this:
         correct_pw = st.secrets["general"]["APP_PASSWORD"]
-
-        # We'll store a boolean in session_state to remember if the user is logged in
         if "password_correct" not in st.session_state:
             st.session_state["password_correct"] = False
 
-        # Prompt user for password
         entered_pw = st.sidebar.text_input("Enter your password:", type="password")
-
         if entered_pw == correct_pw:
             st.session_state["password_correct"] = True
             return True
         else:
             st.session_state["password_correct"] = False
             return False
-    except KeyError as e:
+    except KeyError:
         st.error("Missing `APP_PASSWORD` in secrets.toml under [general]!")
         st.stop()
 
 
 # --- Main App ---
 def main():
-    st.title("Password-Protected Streamlit App")
+    st.title("Content Scraper and Poster")
 
     # 1. Check password first
     if not check_password():
         st.warning("Please enter the correct password in the sidebar.")
-        st.stop()  # This prevents the rest of the app from rendering
+        st.stop()
 
     # 2. Input for content scraping
-    api_url = st.text_input("Enter API URL for content scraping:", "https://api.example.com/content")
-    st.write("Using API URL:", api_url)
+    query = st.text_input("Enter search query:", "sports analytics")
+    st.write("Search Query:", query)
 
-    if st.button("Scrape and Generate Posts"):
+    if st.button("Fetch and Generate Posts"):
         try:
-            # Scrape content
-            headers = {"Authorization": f"Bearer {st.secrets['api_keys']['aggregator_api_key']}"}
-            raw_content = scrape_content_from_api(api_url, headers=headers)
+            # Fetch results from Google and NewsAPI
+            google_results = fetch_google_results(query)
+            newsapi_results = fetch_newsapi_results(query)
 
-            # Rate and select content
-            rated_content = rate_content(raw_content)
+            # Combine and rate results
+            combined_results = google_results + newsapi_results
+            rated_content = rate_content(combined_results)
+
+            # Select top 3 items
             top_content = select_top_content(rated_content, n=3)
 
             # Generate social posts
@@ -178,10 +139,6 @@ def main():
                 st.subheader(f"Post {idx}: {post['platform']}")
                 st.text_area("Content", post["content"], height=150)
 
-            if st.button("Approve and Post"):
-                for post in all_posts:
-                    status, message = post_to_platform(post["content"], post["platform"], st.secrets["api_keys"])
-                    st.write(f"Posted to {post['platform']}: {status} - {message}")
         except Exception as e:
             st.error(f"Error occurred: {e}")
 
