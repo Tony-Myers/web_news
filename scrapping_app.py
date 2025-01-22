@@ -67,7 +67,7 @@ def generate_social_posts(content_item: Dict[str, Any], platform: str) -> str:
     """
     Returns a text snippet (plus an image placeholder reference) for LinkedIn, BlueSky, or X.
     """
-    base_post = f"Check out this fascinating piece: '{content_item['title']}'\nRead more: {content_item['url']}"
+    base_post = f"This is interesting: '{content_item['title']}'\nRead more: {content_item['url']}"
     if platform == "LinkedIn":
         return f"{base_post}\n\n[LinkedIn Placeholder Image]"
     elif platform == "BlueSky":
