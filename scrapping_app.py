@@ -1,8 +1,3 @@
-# requirements.txt
-streamlit
-requests
-python-dotenv
-
 # main.py
 import os
 import json
