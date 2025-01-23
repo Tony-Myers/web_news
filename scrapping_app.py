@@ -48,7 +48,7 @@ class NewsAPIClient:
     @staticmethod
     @rate_limited(MAX_API_CALLS_PER_DAY)
     def fetch_articles(query: str) -> List[Article]:
-        time.sleep(1)  # Rate limit buffer
+        time.sleep(1)
         params = {
             "apiKey": st.secrets["NEWS_API_KEY"],
             "q": query,
@@ -74,7 +74,7 @@ class GuardianAPIClient:
     @staticmethod
     @rate_limited(MAX_API_CALLS_PER_DAY)
     def fetch_articles(query: str) -> List[Article]:
-        time.sleep(1)  # Rate limit buffer
+        time.sleep(1)
         params = {
             "api-key": st.secrets["GUARDIAN_API_KEY"],
             "q": query,
@@ -99,32 +99,56 @@ class GuardianAPIClient:
 class ContentScorer:
     @staticmethod
     def score_article(article: Article, focus_area: str) -> Dict[str, float]:
-        prompt = f"""Analyze for academic relevance:
+        prompt = f"""Analyze this article for academic relevance:
         Title: {article.title}
         Description: {article.description}
         Source: {article.source}
 
-        Provide JSON scores (0-1) for:
-        1. Relevance to {focus_area}
-        2. Source credibility
-        3. Engagement potential
+        Provide scores (0-1) for:
+        1. Relevance to {focus_area} - key_score
+        2. Source credibility - credibility_score
+        3. Engagement potential - engagement_score
+
+        Return ONLY a JSON object with these three scores.
+        Example: {{"key_score": 0.85, "credibility_score": 0.92, "engagement_score": 0.78}}
         """
         
         try:
             response = requests.post(
                 DEEPSEEK_API_URL,
-                headers={"Authorization": f"Bearer {st.secrets['DEEPSEEK_API_KEY']}"},
+                headers={
+                    "Authorization": f"Bearer {st.secrets['DEEPSEEK_API_KEY']}",
+                    "Content-Type": "application/json"
+                },
                 json={
                     "model": "deepseek-chat",
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3
+                    "temperature": 0.3,
+                    "response_format": {"type": "json_object"}
                 },
-                timeout=15
+                timeout=20
             )
-            return json.loads(response.json()['choices'][0]['message']['content'])
+
+            # Debugging output
+            if response.status_code != 200:
+                st.error(f"DeepSeek API Error: Status {response.status_code}")
+                return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
+
+            try:
+                response_json = response.json()
+                content = json.loads(response_json['choices'][0]['message']['content'])
+                return {
+                    "key_score": float(content.get("key_score", 0)),
+                    "credibility_score": float(content.get("credibility_score", 0)),
+                    "engagement_score": float(content.get("engagement_score", 0))
+                }
+            except json.JSONDecodeError:
+                st.error("Failed to parse DeepSeek response")
+                return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
+            
         except Exception as e:
             st.error(f"DeepSeek API Error: {str(e)}")
-            return {"relevance": 0, "credibility": 0, "engagement": 0}
+            return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
 
 class SocialMediaManager:
     @staticmethod
@@ -215,7 +239,11 @@ def main():
                 
                 st.session_state.articles = sorted(
                     all_articles,
-                    key=lambda x: sum(x.scores.values()),
+                    key=lambda x: (
+                        x.scores.get('key_score', 0) * 0.5 +
+                        x.scores.get('credibility_score', 0) * 0.3 +
+                        x.scores.get('engagement_score', 0) * 0.2
+                    ),
                     reverse=True
                 )[:4]
 
@@ -226,9 +254,9 @@ def main():
         for idx, article in enumerate(st.session_state.articles):
             with st.expander(f"{idx+1}. {article.title}"):
                 st.write(f"**Source:** {article.source}")
-                st.write(f"**Relevance:** {article.scores.get('relevance', 0):.2f}")
-                st.write(f"**Credibility:** {article.scores.get('credibility', 0):.2f}")
-                st.write(f"**Engagement:** {article.scores.get('engagement', 0):.2f}")
+                st.write(f"**Relevance Score:** {article.scores.get('key_score', 0):.2f}")
+                st.write(f"**Credibility Score:** {article.scores.get('credibility_score', 0):.2f}")
+                st.write(f"**Engagement Score:** {article.scores.get('engagement_score', 0):.2f}")
                 st.write(f"[Read Article]({article.url})")
 
         # Post Generation
