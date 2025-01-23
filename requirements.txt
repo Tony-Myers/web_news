@@ -1,4 +1,6 @@
+
 streamlit
 requests
+tweepy
+atproto
 python-dotenv
-typing
