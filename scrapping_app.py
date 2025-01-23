@@ -1,147 +1,246 @@
-# File: scrapping_app.py
-import streamlit as st
+# requirements.txt
+streamlit
+requests
+python-dotenv
+
+# main.py
+import os
+import json
 import requests
-from typing import List, Dict, Any
+import streamlit as st
+from typing import List, Dict, Optional
 
+# Configuration
+NEWS_API_URL = "https://newsapi.org/v2/everything"
+GUARDIAN_API_URL = "https://content.guardianapis.com/search"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# --- Utility Functions ---
-def fetch_google_results(query: str) -> List[Dict[str, Any]]:
-    """
-    Fetches results from Google Custom Search API.
-    """
-    try:
-        params = {
-            "key": st.secrets["api_keys"]["google_api_key"],
-            "cx": st.secrets["api_keys"]["google_cx"],
-            "q": query,
-        }
-        response = requests.get("https://www.googleapis.com/customsearch/v1", params=params)
-        response.raise_for_status()
-        items = response.json().get("items", [])
-        return [{"title": item["title"], "url": item["link"], "description": item.get("snippet", "")} for item in items]
-    except Exception as e:
-        st.error(f"Error fetching results from Google: {e}")
-        return []
+# Article data structure
+class Article:
+    def __init__(self, title: str, description: str, url: str, source: str):
+        self.title = title
+        self.description = description
+        self.url = url
+        self.source = source
+        self.scores: Dict[str, float] = {}
 
-
-def fetch_newsapi_results(query: str) -> List[Dict[str, Any]]:
-    """
-    Fetches results from NewsAPI.
-    """
-    try:
-        headers = {"Authorization": f"Bearer {st.secrets['api_keys']['newsapi_key']}"}
-        params = {"q": query, "language": "en"}
-        response = requests.get("https://newsapi.org/v2/everything", headers=headers, params=params)
-        response.raise_for_status()
-        articles = response.json().get("articles", [])
-        return [{"title": article["title"], "url": article["url"], "description": article.get("description", "")} for article in articles]
-    except Exception as e:
-        st.error(f"Error fetching results from NewsAPI: {e}")
-        return []
-
-
-def rate_content(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Applies a scoring algorithm to rate content relevance.
-    """
-    keywords = ["Bayesian", "sports science", "health analytics", "peer-reviewed"]
-    for item in items:
-        score = 0
-        title = item.get("title", "").lower()
-        description = item.get("description", "").lower()
-        for keyword in keywords:
-            if keyword.lower() in title or keyword.lower() in description:
-                score += 10
-        item["score"] = score
-    return sorted(items, key=lambda x: x.get("score", 0), reverse=True)
-
-
-def select_top_content(rated_items: List[Dict[str, Any]], n: int = 3) -> List[Dict[str, Any]]:
-    """
-    Picks the top N items based on score.
-    """
-    return rated_items[:n]
-
-
-def generate_social_posts(content_item: Dict[str, Any], platform: str) -> str:
-    """
-    Returns a text snippet (plus an image placeholder reference) for LinkedIn, BlueSky, or X.
-    """
-    base_post = f"This is interesting: '{content_item['title']}'\nRead more: {content_item['url']}"
-    if platform == "LinkedIn":
-        return f"{base_post}\n\n[LinkedIn Placeholder Image]"
-    elif platform == "BlueSky":
-        return f"{base_post}\n\n[BlueSky Placeholder Image]"
-    elif platform == "X":
-        return f"{base_post}\n\n[X Placeholder Image]"
-    else:
-        raise ValueError(f"Unsupported platform: {platform}")
-
-
+# Authentication
 def check_password():
-    """
-    Checks if the user-provided password matches the stored password.
-    """
-    try:
-        correct_pw = st.secrets["general"]["APP_PASSWORD"]
-        if "password_correct" not in st.session_state:
-            st.session_state["password_correct"] = False
-
-        entered_pw = st.sidebar.text_input("Enter your password:", type="password")
-        if entered_pw == correct_pw:
-            st.session_state["password_correct"] = True
-            return True
+    """Basic password authentication"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        password = st.text_input("Enter password:", type="password")
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state.authenticated = True
         else:
-            st.session_state["password_correct"] = False
-            return False
-    except KeyError:
-        st.error("Missing `APP_PASSWORD` in secrets.toml under [general]!")
-        st.stop()
+            st.stop()
 
+# API Clients
+class NewsAPIClient:
+    @staticmethod
+    def fetch_articles(query: str) -> List[Article]:
+        params = {
+            "apiKey": st.secrets["NEWS_API_KEY"],
+            "q": query,
+            "pageSize": 50,
+            "sortBy": "relevancy"
+        }
+        response = requests.get(NEWS_API_URL, params=params)
+        articles = []
+        for item in response.json().get("articles", []):
+            articles.append(Article(
+                title=item.get("title", ""),
+                description=item.get("description", ""),
+                url=item.get("url", ""),
+                source=item.get("source", {}).get("name", "")
+            ))
+        return articles
 
-# --- Main App ---
-def main():
-    st.title("Content Scraper and Poster")
+class GuardianAPIClient:
+    @staticmethod
+    def fetch_articles(query: str) -> List[Article]:
+        params = {
+            "api-key": st.secrets["GUARDIAN_API_KEY"],
+            "q": query,
+            "page-size": 50,
+            "show-fields": "headline,trailText"
+        }
+        response = requests.get(GUARDIAN_API_URL, params=params)
+        articles = []
+        for item in response.json().get("response", {}).get("results", []):
+            articles.append(Article(
+                title=item.get("fields", {}).get("headline", ""),
+                description=item.get("fields", {}).get("trailText", ""),
+                url=item.get("webUrl", ""),
+                source="The Guardian"
+            ))
+        return articles
 
-    # 1. Check password first
-    if not check_password():
-        st.warning("Please enter the correct password in the sidebar.")
-        st.stop()
+# Content Scoring
+class ContentScorer:
+    @staticmethod
+    def score_article(article: Article, focus_area: str) -> Dict[str, float]:
+        """Score article using DeepSeek API"""
+        prompt = f"""
+        Analyze this article for academic relevance:
+        Title: {article.title}
+        Description: {article.description}
+        Source: {article.source}
 
-    # 2. Input for content scraping
-    query = st.text_input("Enter search query:", "sports analytics")
-    st.write("Search Query:", query)
+        Provide scores (0-1) for:
+        1. Relevance to {focus_area}
+        2. Source credibility
+        3. Engagement potential
 
-    if st.button("Fetch and Generate Posts"):
+        Return ONLY a JSON object with scores and brief explanation.
+        """
+        
+        response = requests.post(
+            DEEPSEEK_API_URL,
+            headers={"Authorization": f"Bearer {st.secrets['DEEPSEEK_API_KEY']}"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3
+            }
+        )
+        
         try:
-            # Fetch results from Google and NewsAPI
-            google_results = fetch_google_results(query)
-            newsapi_results = fetch_newsapi_results(query)
+            scores = json.loads(response.json()['choices'][0]['message']['content'])
+            return scores
+        except:
+            return {"relevance": 0, "credibility": 0, "engagement": 0}
 
-            # Combine and rate results
-            combined_results = google_results + newsapi_results
-            rated_content = rate_content(combined_results)
+# Post Generation
+class SocialMediaGenerator:
+    @staticmethod
+    def generate_post(article: Article, platform: str) -> str:
+        """Generate platform-specific post using DeepSeek"""
+        prompt = f"""
+        Create a {platform} post about this article:
+        Title: {article.title}
+        Key points: {article.description}
+        URL: {article.url}
 
-            # Select top 3 items
-            top_content = select_top_content(rated_content, n=3)
+        Requirements:
+        - {SocialMediaGenerator._platform_guidelines(platform)}
+        - Sound like a thoughtful academic
+        - Include relevant hashtags
+        - Keep URL as-is
+        """
+        
+        response = requests.post(
+            DEEPSEEK_API_URL,
+            headers={"Authorization": f"Bearer {st.secrets['DEEPSEEK_API_KEY']}"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7
+            }
+        )
+        
+        return response.json()['choices'][0]['message']['content']
+    
+    @staticmethod
+    def _platform_guidelines(platform: str) -> str:
+        guidelines = {
+            "twitter": "280 characters max, casual tone",
+            "bluesky": "300 characters max, concise but insightful",
+            "linkedin": "Professional tone, highlight research implications"
+        }
+        return guidelines.get(platform, "")
 
-            # Generate social posts
-            platforms = ["LinkedIn", "BlueSky", "X"]
-            all_posts = []
-
-            for item in top_content:
-                for platform in platforms:
-                    post = generate_social_posts(item, platform)
-                    all_posts.append({"platform": platform, "content": post})
-
-            # Display posts for user verification
-            for idx, post in enumerate(all_posts, 1):
-                st.subheader(f"Post {idx}: {post['platform']}")
-                st.text_area("Content", post["content"], height=150)
-
-        except Exception as e:
-            st.error(f"Error occurred: {e}")
-
+# Streamlit UI
+def main():
+    check_password()
+    st.title("Academic Content Aggregator")
+    
+    # User input
+    focus_area = st.text_input("Enter research focus area:", "sport and health research")
+    query = st.text_input("Search query:", "AI in higher education")
+    
+    if st.button("Search Articles"):
+        # Fetch articles
+        news_articles = NewsAPIClient.fetch_articles(query)
+        guardian_articles = GuardianAPIClient.fetch_articles(query)
+        all_articles = news_articles + guardian_articles
+        
+        # Score articles
+        scorer = ContentScorer()
+        for article in all_articles:
+            scores = scorer.score_article(article, focus_area)
+            article.scores = scores
+        
+        # Sort by combined score
+        sorted_articles = sorted(all_articles, 
+                               key=lambda x: (x.scores.get('relevance', 0) + 
+                                             x.scores.get('credibility', 0) + 
+                                             x.scores.get('engagement', 0)), 
+                               reverse=True)
+        
+        # Select top 4
+        top_articles = sorted_articles[:4]
+        st.session_state.top_articles = top_articles
+        
+        # Display results
+        st.subheader("Top Articles")
+        for idx, article in enumerate(top_articles, 1):
+            with st.expander(f"{idx}. {article.title}"):
+                st.write(f"**Source:** {article.source}")
+                st.write(f"**Relevance:** {article.scores.get('relevance', 0):.2f}")
+                st.write(f"**Credibility:** {article.scores.get('credibility', 0):.2f}")
+                st.write(f"**Engagement:** {article.scores.get('engagement', 0):.2f}")
+                st.write(f"[Read article]({article.url})")
+        
+        # Generate posts
+        generator = SocialMediaGenerator()
+        posts = {}
+        for platform in ["twitter", "bluesky", "linkedin"]:
+            posts[platform] = [generator.generate_post(article, platform) for article in top_articles]
+        
+        st.session_state.posts = posts
+        st.session_state.show_posts = True
+    
+    if st.session_state.get('show_posts', False):
+        st.subheader("Generated Social Media Posts")
+        edited_posts = []
+        
+        for idx, article in enumerate(st.session_state.top_articles):
+            st.markdown(f"### Article {idx+1}: {article.title}")
+            
+            platform_posts = {}
+            for platform in ["twitter", "bluesky", "linkedin"]:
+                original_post = st.session_state.posts[platform][idx]
+                edited = st.text_area(
+                    f"{platform.capitalize()} Post", 
+                    value=original_post,
+                    height=150,
+                    key=f"{platform}_{idx}"
+                )
+                platform_posts[platform] = edited
+            
+            edited_posts.append(platform_posts)
+        
+        st.session_state.edited_posts = edited_posts
+        
+        if st.button("Approve and Download Posts"):
+            # Prepare download data
+            download_content = ""
+            for idx, posts in enumerate(st.session_state.edited_posts):
+                download_content += f"Article {idx+1} Posts:\n"
+                for platform, content in posts.items():
+                    download_content += f"\n{platform.upper()}:\n{content}\n"
+                download_content += "\n" + "-"*50 + "\n"
+            
+            # Offer download
+            st.download_button(
+                label="Download Approved Posts",
+                data=download_content,
+                file_name="social_media_posts.txt",
+                mime="text/plain"
+            )
 
 if __name__ == "__main__":
     main()
