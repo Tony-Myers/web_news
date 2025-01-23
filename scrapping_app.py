@@ -18,7 +18,6 @@ API_CALL_LOG = []
 ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif"]
 MAX_IMAGE_SIZE_MB = 5
 
-# Data class must be defined first
 class Article:
     def __init__(self, title: str, description: str, url: str, source: str):
         self.title = title
@@ -27,7 +26,6 @@ class Article:
         self.source = source
         self.scores: Dict[str, float] = {}
 
-# Rate limiter decorator
 def rate_limited(max_calls: int):
     def decorator(func):
         def wrapper(*args, **kwargs):
@@ -47,7 +45,6 @@ def rate_limited(max_calls: int):
         return wrapper
     return decorator
 
-# API Clients
 class NewsAPIClient:
     @staticmethod
     @rate_limited(MAX_API_CALLS_PER_DAY)
@@ -99,7 +96,6 @@ class GuardianAPIClient:
             st.error(f"Guardian API Error: {str(e)}")
             return []
 
-# Content Processing
 class ContentScorer:
     @staticmethod
     def score_article(article: Article, focus_area: str) -> Dict[str, float]:
@@ -134,7 +130,6 @@ class ContentScorer:
             )
 
             if response.status_code != 200:
-                st.error(f"DeepSeek API Error: Status {response.status_code}")
                 return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
 
             try:
@@ -145,15 +140,12 @@ class ContentScorer:
                     "credibility_score": float(content.get("credibility_score", 0)),
                     "engagement_score": float(content.get("engagement_score", 0))
                 }
-            except json.JSONDecodeError:
-                st.error("Failed to parse DeepSeek response")
+            except:
                 return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
             
         except Exception as e:
-            st.error(f"DeepSeek API Error: {str(e)}")
             return {"key_score": 0, "credibility_score": 0, "engagement_score": 0}
 
-# Social Media Handling
 class SocialMediaManager:
     @staticmethod
     def generate_post(article: Article, platform: str) -> Tuple[str, str]:
@@ -182,8 +174,8 @@ class SocialMediaManager:
             )
             post_text = response.json()['choices'][0]['message']['content']
             return post_text, ""
-        except Exception as e:
-            return f"Post generation failed: {str(e)}", ""
+        except:
+            return f"Post generation failed", ""
 
     @staticmethod
     def post_to_twitter(text: str, image: Optional[bytes] = None) -> bool:
@@ -243,7 +235,6 @@ class SocialMediaManager:
             st.error(f"BlueSky Error: {str(e)}")
             return False
 
-# Streamlit UI
 def main():
     if not st.session_state.get("authenticated"):
         password = st.text_input("Enter access password:", type="password")
@@ -279,13 +270,12 @@ def main():
 
     if "articles" in st.session_state:
         st.subheader("Top Articles")
-        posts = {}
         for idx, article in enumerate(st.session_state.articles):
             with st.expander(f"{idx+1}. {article.title}"):
                 st.write(f"**Source:** {article.source}")
-                st.write(f"**Relevance Score:** {article.scores.get('key_score', 0):.2f}")
-                st.write(f"**Credibility Score:** {article.scores.get('credibility_score', 0):.2f}")
-                st.write(f"**Engagement Score:** {article.scores.get('engagement_score', 0):.2f}")
+                st.write(f"**Relevance:** {article.scores.get('key_score', 0):.2f}")
+                st.write(f"**Credibility:** {article.scores.get('credibility_score', 0):.2f}")
+                st.write(f"**Engagement:** {article.scores.get('engagement_score', 0):.2f}")
                 st.write(f"[Read Article]({article.url})")
 
         if st.button("Generate Social Posts"):
@@ -297,6 +287,7 @@ def main():
                     for article in st.session_state.articles
                 ]
             st.session_state.posts = platform_posts
+            st.session_state.selected_posts = {}
 
     if "posts" in st.session_state:
         st.subheader("Social Media Posts")
@@ -318,6 +309,13 @@ def main():
                         height=150,
                         key=f"{platform}_{idx}"
                     )
+                    # Add selection checkbox
+                    is_selected = st.checkbox(
+                        f"Post to {platform.capitalize()}",
+                        value=True,
+                        key=f"select_{platform}_{idx}"
+                    )
+                    st.session_state.selected_posts[f"{platform}_{idx}"] = is_selected
                 
                 with col2:
                     img_key = f"{platform}_{idx}_image"
@@ -325,7 +323,7 @@ def main():
                         "Upload Image",
                         type=["jpg", "png", "gif"],
                         key=img_key,
-                        help=f"Max size: {MAX_IMAGE_SIZE_MB}MB, Recommended ratio: 16:9"
+                        help=f"Max size: {MAX_IMAGE_SIZE_MB}MB"
                     )
                     
                     if uploaded_file is not None:
@@ -335,7 +333,10 @@ def main():
                             st.error("Unsupported image format")
                         else:
                             article_images[platform] = uploaded_file.read()
-                            st.image(article_images[platform], use_column_width=True)
+                            st.image(
+                                article_images[platform], 
+                                use_container_width=True  # Fixed deprecated parameter
+                            )
                     
                     uploaded_images[f"{platform}_{idx}"] = article_images.get(platform, b"")
                 
@@ -346,27 +347,53 @@ def main():
         st.session_state.edited_posts = edited_posts
         st.session_state.uploaded_images = uploaded_images
         
-        if st.button("Final Approval"):
-            post_enabled = st.toggle("Enable actual posting", False)
+        if st.button("Final Approval and Posting"):
+            post_enabled = st.toggle("Enable actual social media posting", value=False)
             smm = SocialMediaManager()
             
-            for idx, posts in enumerate(st.session_state.edited_posts):
-                for platform, content in posts.items():
-                    image_data = st.session_state.uploaded_images.get(f"{platform}_{idx}", b"")
-                    
-                    if post_enabled:
-                        if platform == "twitter":
-                            success = smm.post_to_twitter(content, image_data)
-                        elif platform == "bluesky":
-                            success = smm.post_to_bluesky(content, image_data)
-                        if success:
-                            st.success(f"Posted to {platform.upper()}!")
-                    else:
-                        st.info(f"{platform.upper()} Preview:")
-                        st.write(content)
-                        if image_data:
-                            st.image(image_data, use_column_width=True)
+            success_count = 0
+            total_selected = sum(st.session_state.selected_posts.values())
             
+            if total_selected > 0:
+                progress_bar = st.progress(0)
+                current_progress = 0
+            
+            for idx in range(len(st.session_state.articles)):
+                for platform in ["twitter", "bluesky", "linkedin"]:
+                    post_key = f"{platform}_{idx}"
+                    if st.session_state.selected_posts.get(post_key, False):
+                        content = st.session_state.edited_posts[idx][platform]
+                        image_data = st.session_state.uploaded_images.get(post_key, b"")
+                        
+                        if post_enabled:
+                            try:
+                                if platform == "twitter":
+                                    success = smm.post_to_twitter(content, image_data)
+                                elif platform == "bluesky":
+                                    success = smm.post_to_bluesky(content, image_data)
+                                else:
+                                    continue
+                                
+                                if success:
+                                    success_count += 1
+                                    if total_selected > 0:
+                                        current_progress += 1/total_selected
+                                        progress_bar.progress(current_progress)
+                            except Exception as e:
+                                st.error(f"Failed to post to {platform}: {str(e)}")
+                        else:
+                            st.info(f"Dry Run - {platform.upper()} Post:")
+                            st.write(content)
+                            if image_data:
+                                st.image(image_data, use_container_width=True)
+            
+            if post_enabled:
+                if success_count > 0:
+                    st.success(f"Successfully posted {success_count}/{total_selected} selected posts!")
+                else:
+                    st.warning("No posts were sent. Check your credentials and network connection.")
+
+            # Download all posts regardless of selection
             download_data = []
             for idx, posts in enumerate(st.session_state.edited_posts):
                 download_data.append(f"\nArticle {idx+1}")
@@ -378,9 +405,9 @@ def main():
                         download_data.append(f"\nImage: data:image/png;base64,{img_str[:100]}...")
             
             st.download_button(
-                "Download Posts with Images",
+                "Download All Posts",
                 data="\n".join(download_data),
-                file_name="social_posts_with_images.txt"
+                file_name="social_posts.txt"
             )
 
 if __name__ == "__main__":
